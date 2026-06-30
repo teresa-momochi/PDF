@@ -23,7 +23,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
 <script>
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 function formatDate(iso) {
   const d = new Date(iso);
@@ -40,7 +40,7 @@ async function loadList() {
   const listEl = document.getElementById('list');
   const emptyEl = document.getElementById('empty');
 
-  const { data, error } = await supabase
+  const { data, error } = await sb
     .from('pdfs')
     .select('*')
     .order('created_at', { ascending: false });
