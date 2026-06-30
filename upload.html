@@ -26,8 +26,7 @@
     </header>
 
     <div class="card" style="display:block;">
-      <input type="file" id="fileInput" accept="application/pdf">
-      <input type="text" id="nameInput" placeholder="顯示名稱(預設使用檔名)">
+      <input type="file" id="fileInput" accept="application/pdf" multiple>
       <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
       <button onclick="uploadFile()" id="uploadBtn">上傳</button>
       <div id="uploadStatus" class="status"></div>
@@ -108,66 +107,76 @@ async function loadList() {
 
 async function uploadFile() {
   const fileInput = document.getElementById('fileInput');
-  const nameInput = document.getElementById('nameInput');
   const statusEl = document.getElementById('uploadStatus');
   const btn = document.getElementById('uploadBtn');
   const bar = document.getElementById('progressBar');
   const fill = document.getElementById('progressFill');
 
-  const file = fileInput.files[0];
-  if (!file) {
+  const files = Array.from(fileInput.files);
+  if (files.length === 0) {
     statusEl.className = 'status error';
-    statusEl.textContent = '請先選擇一個 PDF 檔案';
+    statusEl.textContent = '請先選擇至少一個 PDF 檔案';
     return;
   }
-  if (file.type !== 'application/pdf') {
+  const nonPdf = files.filter(f => f.type !== 'application/pdf');
+  if (nonPdf.length > 0) {
     statusEl.className = 'status error';
-    statusEl.textContent = '只能上傳 PDF 檔案';
+    statusEl.textContent = '只能上傳 PDF 檔案:' + nonPdf.map(f => f.name).join('、');
     return;
   }
 
   btn.disabled = true;
-  statusEl.className = 'status';
-  statusEl.textContent = '上傳中...';
   bar.classList.add('active');
-  fill.style.width = '30%';
 
-  const displayName = nameInput.value.trim() || file.name;
-  const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-  const storagePath = `${Date.now()}_${safeName}`;
+  let successCount = 0;
+  const failed = [];
 
-  try {
-    const { error: uploadError } = await sb.storage
-      .from(BUCKET_NAME)
-      .upload(storagePath, file, { contentType: 'application/pdf' });
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    statusEl.className = 'status';
+    statusEl.textContent = `上傳中 (${i + 1}/${files.length}):${file.name}`;
+    fill.style.width = `${Math.round(((i + 0.5) / files.length) * 100)}%`;
 
-    if (uploadError) throw uploadError;
-    fill.style.width = '70%';
+    const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+    const storagePath = `${Date.now()}_${i}_${safeName}`;
 
-    const { data: urlData } = sb.storage.from(BUCKET_NAME).getPublicUrl(storagePath);
+    try {
+      const { error: uploadError } = await sb.storage
+        .from(BUCKET_NAME)
+        .upload(storagePath, file, { contentType: 'application/pdf' });
 
-    const { error: insertError } = await sb.from('pdfs').insert({
-      name: displayName,
-      storage_path: storagePath,
-      url: urlData.publicUrl,
-      size: file.size
-    });
+      if (uploadError) throw uploadError;
 
-    if (insertError) throw insertError;
+      const { data: urlData } = sb.storage.from(BUCKET_NAME).getPublicUrl(storagePath);
 
-    fill.style.width = '100%';
-    statusEl.className = 'status success';
-    statusEl.textContent = '✅ 上傳成功!';
-    fileInput.value = '';
-    nameInput.value = '';
-    loadList();
-  } catch (err) {
-    statusEl.className = 'status error';
-    statusEl.textContent = '上傳失敗:' + err.message;
-  } finally {
-    btn.disabled = false;
-    setTimeout(() => { bar.classList.remove('active'); fill.style.width = '0%'; }, 800);
+      const { error: insertError } = await sb.from('pdfs').insert({
+        name: file.name,
+        storage_path: storagePath,
+        url: urlData.publicUrl,
+        size: file.size
+      });
+
+      if (insertError) throw insertError;
+      successCount++;
+    } catch (err) {
+      failed.push(`${file.name}(${err.message})`);
+    }
+
+    fill.style.width = `${Math.round(((i + 1) / files.length) * 100)}%`;
   }
+
+  if (failed.length === 0) {
+    statusEl.className = 'status success';
+    statusEl.textContent = `✅ 成功上傳 ${successCount} 份 PDF!`;
+  } else {
+    statusEl.className = 'status error';
+    statusEl.textContent = `完成 ${successCount} 份,失敗:${failed.join('、')}`;
+  }
+
+  fileInput.value = '';
+  loadList();
+  btn.disabled = false;
+  setTimeout(() => { bar.classList.remove('active'); fill.style.width = '0%'; }, 800);
 }
 
 async function deleteFile(id, storagePath) {
