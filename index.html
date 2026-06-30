@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>教材 PDF 庫</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>📚 教材 PDF 庫</h1>
+      <div class="subtitle">跨電腦讀取你上傳的教材 PDF</div>
+    </div>
+    <a class="nav-link" href="upload.html">+ 上傳 PDF</a>
+  </header>
+
+  <div id="list"></div>
+  <div id="empty" class="empty" style="display:none;">目前還沒有任何 PDF,點右上角「上傳 PDF」新增第一份吧。</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+function formatDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function formatSize(bytes) {
+  if (!bytes) return '';
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1 ? mb.toFixed(1) + ' MB' : (bytes / 1024).toFixed(0) + ' KB';
+}
+
+async function loadList() {
+  const listEl = document.getElementById('list');
+  const emptyEl = document.getElementById('empty');
+
+  const { data, error } = await supabase
+    .from('pdfs')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    listEl.innerHTML = `<div class="empty">讀取失敗:${error.message}</div>`;
+    return;
+  }
+
+  if (!data || data.length === 0) {
+    emptyEl.style.display = 'block';
+    return;
+  }
+
+  listEl.innerHTML = data.map(item => `
+    <div class="card">
+      <div>
+        <div class="pdf-title">${item.name}</div>
+        <div class="pdf-meta">${formatDate(item.created_at)} · ${formatSize(item.size)}</div>
+      </div>
+      <div class="row-actions">
+        <a class="btn" href="${item.url}" target="_blank" rel="noopener">開啟</a>
+      </div>
+    </div>
+  `).join('');
+}
+
+loadList();
+</script>
+</body>
+</html>

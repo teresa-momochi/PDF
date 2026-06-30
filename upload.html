@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>上傳 PDF</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+  <div id="gate" class="gate">
+    <h2>🔒 請輸入密碼</h2>
+    <input type="password" id="pwInput" placeholder="密碼">
+    <button onclick="checkPassword()">進入</button>
+    <div id="gateStatus" class="status error"></div>
+  </div>
+
+  <div id="main" style="display:none;">
+    <header class="top">
+      <div>
+        <h1>📤 上傳 PDF</h1>
+        <div class="subtitle">上傳後即可在任何電腦透過首頁開啟</div>
+      </div>
+      <a class="nav-link" href="index.html">← 回到 PDF 庫</a>
+    </header>
+
+    <div class="card" style="display:block;">
+      <input type="file" id="fileInput" accept="application/pdf">
+      <input type="text" id="nameInput" placeholder="顯示名稱(預設使用檔名)">
+      <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
+      <button onclick="uploadFile()" id="uploadBtn">上傳</button>
+      <div id="uploadStatus" class="status"></div>
+    </div>
+
+    <h2 style="font-size:1.1rem; margin-top:36px;">已上傳的 PDF</h2>
+    <div id="list"></div>
+  </div>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script>
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+function checkPassword() {
+  const val = document.getElementById('pwInput').value;
+  if (val === UPLOAD_PASSWORD) {
+    sessionStorage.setItem('pdf_upload_auth', 'ok');
+    document.getElementById('gate').style.display = 'none';
+    document.getElementById('main').style.display = 'block';
+    loadList();
+  } else {
+    document.getElementById('gateStatus').textContent = '密碼錯誤,請再試一次';
+  }
+}
+
+if (sessionStorage.getItem('pdf_upload_auth') === 'ok') {
+  document.getElementById('gate').style.display = 'none';
+  document.getElementById('main').style.display = 'block';
+}
+
+document.getElementById('pwInput')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') checkPassword();
+});
+
+function formatDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function formatSize(bytes) {
+  if (!bytes) return '';
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1 ? mb.toFixed(1) + ' MB' : (bytes / 1024).toFixed(0) + ' KB';
+}
+
+async function loadList() {
+  const listEl = document.getElementById('list');
+  const { data, error } = await supabase
+    .from('pdfs')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    listEl.innerHTML = `<div class="empty">讀取失敗:${error.message}</div>`;
+    return;
+  }
+  if (!data || data.length === 0) {
+    listEl.innerHTML = `<div class="empty">尚無已上傳的 PDF</div>`;
+    return;
+  }
+
+  listEl.innerHTML = data.map(item => `
+    <div class="card">
+      <div>
+        <div class="pdf-title">${item.name}</div>
+        <div class="pdf-meta">${formatDate(item.created_at)} · ${formatSize(item.size)}</div>
+      </div>
+      <div class="row-actions">
+        <a class="btn secondary" href="${item.url}" target="_blank" rel="noopener">開啟</a>
+        <button class="danger" onclick="deleteFile('${item.id}', '${item.storage_path}')">刪除</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function uploadFile() {
+  const fileInput = document.getElementById('fileInput');
+  const nameInput = document.getElementById('nameInput');
+  const statusEl = document.getElementById('uploadStatus');
+  const btn = document.getElementById('uploadBtn');
+  const bar = document.getElementById('progressBar');
+  const fill = document.getElementById('progressFill');
+
+  const file = fileInput.files[0];
+  if (!file) {
+    statusEl.className = 'status error';
+    statusEl.textContent = '請先選擇一個 PDF 檔案';
+    return;
+  }
+  if (file.type !== 'application/pdf') {
+    statusEl.className = 'status error';
+    statusEl.textContent = '只能上傳 PDF 檔案';
+    return;
+  }
+
+  btn.disabled = true;
+  statusEl.className = 'status';
+  statusEl.textContent = '上傳中...';
+  bar.classList.add('active');
+  fill.style.width = '30%';
+
+  const displayName = nameInput.value.trim() || file.name;
+  const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+  const storagePath = `${Date.now()}_${safeName}`;
+
+  try {
+    const { error: uploadError } = await supabase.storage
+      .from(BUCKET_NAME)
+      .upload(storagePath, file, { contentType: 'application/pdf' });
+
+    if (uploadError) throw uploadError;
+    fill.style.width = '70%';
+
+    const { data: urlData } = supabase.storage.from(BUCKET_NAME).getPublicUrl(storagePath);
+
+    const { error: insertError } = await supabase.from('pdfs').insert({
+      name: displayName,
+      storage_path: storagePath,
+      url: urlData.publicUrl,
+      size: file.size
+    });
+
+    if (insertError) throw insertError;
+
+    fill.style.width = '100%';
+    statusEl.className = 'status success';
+    statusEl.textContent = '✅ 上傳成功!';
+    fileInput.value = '';
+    nameInput.value = '';
+    loadList();
+  } catch (err) {
+    statusEl.className = 'status error';
+    statusEl.textContent = '上傳失敗:' + err.message;
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { bar.classList.remove('active'); fill.style.width = '0%'; }, 800);
+  }
+}
+
+async function deleteFile(id, storagePath) {
+  if (!confirm('確定要刪除這個 PDF 嗎?此動作無法復原。')) return;
+
+  const { error: storageError } = await supabase.storage.from(BUCKET_NAME).remove([storagePath]);
+  if (storageError) {
+    alert('刪除檔案失敗:' + storageError.message);
+    return;
+  }
+  const { error: dbError } = await supabase.from('pdfs').delete().eq('id', id);
+  if (dbError) {
+    alert('刪除紀錄失敗:' + dbError.message);
+    return;
+  }
+  loadList();
+}
+</script>
+</body>
+</html>
