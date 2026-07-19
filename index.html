@@ -5,6 +5,42 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>教材 PDF 庫</title>
 <link rel="stylesheet" href="style.css">
+<style>
+.search-wrap {
+  position: relative;
+  margin-bottom: 20px;
+}
+.search-wrap input {
+  width: 100%;
+  padding: 12px 14px 12px 40px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  font-size: 0.95rem;
+  font-family: inherit;
+  background: #fff;
+  margin: 0;
+}
+.search-wrap input:focus { outline: none; border-color: var(--accent); }
+.search-icon {
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 1rem;
+  pointer-events: none;
+}
+.search-clear {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 1rem;
+  display: none;
+}
+.search-clear.show { display: block; }
+</style>
 </head>
 <body>
 <div class="wrap">
@@ -16,45 +52,43 @@
     <a class="nav-link" href="upload.html">+ 上傳 PDF</a>
   </header>
 
+  <div class="search-wrap">
+    <span class="search-icon">🔍</span>
+    <input type="text" id="searchInput" placeholder="搜尋教材…">
+    <span class="search-clear" id="searchClear" onclick="clearSearch()">✕</span>
+  </div>
+
   <div id="list"></div>
-  <div id="empty" class="empty" style="display:none;">目前還沒有任何 PDF,點右上角「上傳 PDF」新增第一份吧。</div>
+  <div id="empty" class="empty" style="display:none;"></div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
 <script>
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let allData = [];
 
 function formatDate(iso) {
-  const d = new Date(iso);
-  return d.toLocaleString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return new Date(iso).toLocaleString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
-
 function formatSize(bytes) {
   if (!bytes) return '';
   const mb = bytes / (1024 * 1024);
   return mb >= 1 ? mb.toFixed(1) + ' MB' : (bytes / 1024).toFixed(0) + ' KB';
 }
 
-async function loadList() {
+function renderList(data) {
   const listEl = document.getElementById('list');
   const emptyEl = document.getElementById('empty');
-
-  const { data, error } = await sb
-    .from('pdfs')
-    .select('*')
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    listEl.innerHTML = `<div class="empty">讀取失敗:${error.message}</div>`;
-    return;
-  }
-
   if (!data || data.length === 0) {
+    listEl.innerHTML = '';
+    emptyEl.textContent = allData.length === 0
+      ? '目前尚未上傳教材。'
+      : '找不到符合的教材。';
     emptyEl.style.display = 'block';
     return;
   }
-
+  emptyEl.style.display = 'none';
   listEl.innerHTML = data.map(item => `
     <div class="card">
       <div>
@@ -62,10 +96,35 @@ async function loadList() {
         <div class="pdf-meta">${formatDate(item.created_at)} · ${formatSize(item.size)}</div>
       </div>
       <div class="row-actions">
-        <a class="btn" href="${item.url}" target="_blank" rel="noopener">開啟</a>
+        <a class="btn" href="${item.url}" target="_blank" rel="noopener">📂 開啟</a>
       </div>
     </div>
   `).join('');
+}
+
+function applySearch() {
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  document.getElementById('searchClear').classList.toggle('show', q.length > 0);
+  if (!q) { renderList(allData); return; }
+  renderList(allData.filter(item => item.name.toLowerCase().includes(q)));
+}
+
+function clearSearch() {
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchClear').classList.remove('show');
+  renderList(allData);
+}
+
+document.getElementById('searchInput').addEventListener('input', applySearch);
+
+async function loadList() {
+  const { data, error } = await sb.from('pdfs').select('*').order('created_at', { ascending: false });
+  if (error) {
+    document.getElementById('list').innerHTML = `<div class="empty">讀取失敗：${error.message}</div>`;
+    return;
+  }
+  allData = data || [];
+  applySearch();
 }
 
 loadList();
