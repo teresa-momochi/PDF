@@ -55,6 +55,67 @@
 .log p { margin: 2px 0; }
 .log p.ok { color: #2c7a4b; }
 .log p.err { color: #c0392b; }
+
+/* ── 搜尋 ── */
+.search-wrap {
+  position: relative;
+  margin-bottom: 20px;
+}
+.search-wrap input {
+  width: 100%;
+  padding: 12px 14px 12px 40px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  font-size: 0.95rem;
+  font-family: inherit;
+  background: #fff;
+  margin: 0;
+}
+.search-wrap input:focus { outline: none; border-color: var(--accent); }
+.search-icon {
+  position: absolute; left: 13px; top: 50%;
+  transform: translateY(-50%);
+  font-size: 1rem; pointer-events: none;
+}
+.search-clear {
+  position: absolute; right: 12px; top: 50%;
+  transform: translateY(-50%);
+  cursor: pointer; color: var(--muted); font-size: 1rem; display: none;
+}
+.search-clear.show { display: block; }
+
+/* ── 編輯 Modal ── */
+.modal-backdrop {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.35);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+}
+.modal-backdrop.show { display: flex; }
+.modal {
+  background: #fff;
+  border-radius: 16px;
+  padding: 28px 28px 22px;
+  width: min(420px, calc(100vw - 40px));
+  box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+}
+.modal h3 { margin: 0 0 18px; font-size: 1.05rem; }
+.modal label { font-size: 0.82rem; color: var(--muted); display: block; margin-bottom: 6px; }
+.modal .current-name {
+  font-size: 0.85rem;
+  color: var(--muted);
+  background: #f7f5f2;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  word-break: break-all;
+}
+.modal input[type="text"] {
+  margin-bottom: 20px;
+}
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
 </style>
 </head>
 <body>
@@ -93,9 +154,29 @@
     </div>
 
     <h2 style="font-size:1.1rem; margin-top:36px;">已上傳的 PDF</h2>
+    <div class="search-wrap">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="searchInput" placeholder="搜尋教材…">
+      <span class="search-clear" id="searchClear" onclick="clearSearch()">✕</span>
+    </div>
     <div id="list"></div>
   </div>
 
+</div>
+
+<!-- 編輯名稱 Modal -->
+<div class="modal-backdrop" id="renameModal">
+  <div class="modal">
+    <h3>✏️ 編輯教材名稱</h3>
+    <label>目前名稱</label>
+    <div class="current-name" id="modalCurrentName"></div>
+    <label>新名稱</label>
+    <input type="text" id="modalNameInput" placeholder="請輸入教材名稱">
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeRenameModal()">取消</button>
+      <button onclick="saveRename()">儲存</button>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -299,6 +380,44 @@ window.startUpload = async function() {
   }, 1000);
 };
 
+// ── 搜尋 ──────────────────────────────────────────────────────
+let allData = [];
+
+function applySearch() {
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  document.getElementById('searchClear').classList.toggle('show', q.length > 0);
+  renderListData(q ? allData.filter(i => i.name.toLowerCase().includes(q)) : allData);
+}
+
+window.clearSearch = function() {
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchClear').classList.remove('show');
+  renderListData(allData);
+};
+
+document.getElementById('searchInput')?.addEventListener('input', applySearch);
+
+function renderListData(data) {
+  const listEl = document.getElementById('list');
+  if (!data || !data.length) {
+    listEl.innerHTML = `<div class="empty">${allData.length === 0 ? '目前尚未上傳教材。' : '找不到符合的教材。'}</div>`;
+    return;
+  }
+  listEl.innerHTML = data.map(item => `
+    <div class="card">
+      <div>
+        <div class="pdf-title">${item.name}</div>
+        <div class="pdf-meta">${formatDate(item.created_at)} · ${formatSize(item.size)}</div>
+      </div>
+      <div class="row-actions">
+        <a class="btn secondary" href="${item.url}" target="_blank" rel="noopener">📂 開啟</a>
+        <button class="secondary" onclick="openRenameModal('${item.id}', ${JSON.stringify(item.name)})">✏️ 重新命名</button>
+        <button class="danger" onclick="deleteFile('${item.id}','${item.storage_path}')">🗑️ 刪除</button>
+      </div>
+    </div>
+  `).join('');
+}
+
 // ── 清單 ──────────────────────────────────────────────────────
 function formatDate(iso) {
   return new Date(iso).toLocaleString('zh-TW', {
@@ -308,28 +427,71 @@ function formatDate(iso) {
 }
 
 async function loadList() {
-  const listEl = document.getElementById('list');
   const { data, error } = await sb.from('pdfs').select('*').order('created_at', { ascending: false });
-  if (error) { listEl.innerHTML = `<div class="empty">讀取失敗：${error.message}</div>`; return; }
-  if (!data || !data.length) { listEl.innerHTML = `<div class="empty">尚無已上傳的 PDF</div>`; return; }
-  listEl.innerHTML = data.map(item => `
-    <div class="card">
-      <div>
-        <div class="pdf-title">${item.name}</div>
-        <div class="pdf-meta">${formatDate(item.created_at)} · ${formatSize(item.size)}</div>
-      </div>
-      <div class="row-actions">
-        <a class="btn secondary" href="${item.url}" target="_blank" rel="noopener">開啟</a>
-        <button class="danger" onclick="deleteFile('${item.id}','${item.storage_path}')">刪除</button>
-      </div>
-    </div>
-  `).join('');
+  if (error) { document.getElementById('list').innerHTML = `<div class="empty">讀取失敗：${error.message}</div>`; return; }
+  allData = data || [];
+  applySearch();
 }
 
 window.deleteFile = async function(id, storagePath) {
   if (!confirm('確定要刪除這個 PDF 嗎？此動作無法復原。')) return;
   await sb.storage.from(BUCKET_NAME).remove([storagePath]);
   await sb.from('pdfs').delete().eq('id', id);
+  loadList();
+};
+
+// ── 編輯名稱 ──────────────────────────────────────────────────
+let _renameId = null;
+
+window.openRenameModal = function(id, currentName) {
+  _renameId = id;
+  document.getElementById('modalCurrentName').textContent = currentName;
+  const input = document.getElementById('modalNameInput');
+  input.value = currentName;
+  document.getElementById('renameModal').classList.add('show');
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+};
+
+window.closeRenameModal = function() {
+  document.getElementById('renameModal').classList.remove('show');
+  _renameId = null;
+};
+
+// 點 backdrop 關閉
+document.getElementById('renameModal').addEventListener('click', function(e) {
+  if (e.target === this) window.closeRenameModal();
+});
+
+// Enter 儲存
+const modalInput = document.getElementById('modalNameInput');
+modalInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') window.saveRename();
+  if (e.key === 'Escape') window.closeRenameModal();
+});
+modalInput.addEventListener('input', () => { modalInput.style.borderColor = ''; });
+
+window.saveRename = async function() {
+  const input = document.getElementById('modalNameInput');
+  const newName = input.value.trim();
+  if (!newName) {
+    input.style.borderColor = '#c0392b';
+    input.placeholder = '名稱不可空白';
+    input.focus();
+    return;
+  }
+  if (newName.length > 100) {
+    input.style.borderColor = '#c0392b';
+    input.focus();
+    alert(`名稱最長 100 個字元（目前 ${newName.length} 字）`);
+    return;
+  }
+  input.style.borderColor = '';
+  if (!_renameId) return;
+
+  const { error } = await sb.from('pdfs').update({ name: newName }).eq('id', _renameId);
+  if (error) { alert('儲存失敗：' + error.message); return; }
+
+  window.closeRenameModal();
   loadList();
 };
 </script>
