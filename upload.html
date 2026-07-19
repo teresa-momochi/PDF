@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>上傳 PDF</title>
 <link rel="stylesheet" href="style.css">
+<!-- jsPDF UMD 版本：無 Babel 依賴，瀏覽器直接使用 -->
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <style>
 .upload-zone {
   border: 2px dashed var(--border);
@@ -98,10 +100,14 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
+
+<!-- pdf.js 用 module 方式載入 -->
 <script type="module">
 import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs';
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
 
+// jsPDF 已透過 UMD script 載入，直接從 window 取用
+const { jsPDF } = window.jspdf;
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ── 密碼 ──────────────────────────────────────────────────────
@@ -115,7 +121,9 @@ window.checkPassword = function() {
     document.getElementById('gateStatus').textContent = '密碼錯誤，請再試一次';
   }
 };
-document.getElementById('pwInput').addEventListener('keydown', e => { if (e.key === 'Enter') window.checkPassword(); });
+document.getElementById('pwInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') window.checkPassword();
+});
 if (sessionStorage.getItem('pdf_upload_auth') === 'ok') {
   document.getElementById('gate').style.display = 'none';
   document.getElementById('main').style.display = 'block';
@@ -167,7 +175,7 @@ function renderFileList() {
 
 // ── 壓縮核心 ──────────────────────────────────────────────────
 const SIZE_THRESHOLD = 20 * 1024 * 1024; // 20 MB 以上才壓縮
-const RENDER_SCALE   = 0.34;             // 縮小至約 1/3，課堂投影足夠
+const RENDER_SCALE   = 0.34;
 const JPEG_QUALITY   = 0.72;
 
 async function compressPdf(file) {
@@ -175,7 +183,6 @@ async function compressPdf(file) {
   const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   const totalPages = pdfDoc.numPages;
 
-  const { jsPDF } = await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.es.min.js');
   let pdf = null;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
@@ -295,7 +302,8 @@ window.startUpload = async function() {
 // ── 清單 ──────────────────────────────────────────────────────
 function formatDate(iso) {
   return new Date(iso).toLocaleString('zh-TW', {
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit'
   });
 }
 
