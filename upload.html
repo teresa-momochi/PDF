@@ -5,6 +5,55 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>上傳 PDF</title>
 <link rel="stylesheet" href="style.css">
+<style>
+.upload-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 40px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  margin-bottom: 16px;
+  background: #fdfcfb;
+}
+.upload-zone:hover, .upload-zone.dragover {
+  border-color: var(--accent);
+  background: #fff8f5;
+}
+.upload-zone input { display: none; }
+.upload-icon { font-size: 2.4rem; margin-bottom: 8px; }
+.upload-hint { color: var(--muted); font-size: 0.88rem; margin-top: 6px; }
+.file-list { margin-bottom: 16px; }
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #f7f5f2;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+}
+.file-item .fname { flex: 1; word-break: break-all; }
+.file-item .fsize { color: var(--muted); flex-shrink: 0; font-size: 0.82rem; }
+.file-item .fremove { color: var(--muted); cursor: pointer; flex-shrink: 0; font-size: 1.1rem; line-height: 1; }
+.file-item .fremove:hover { color: #c0392b; }
+.log {
+  background: #f7f5f2;
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 0.82rem;
+  color: var(--muted);
+  max-height: 160px;
+  overflow-y: auto;
+  margin-top: 10px;
+  display: none;
+}
+.log.show { display: block; }
+.log p { margin: 2px 0; }
+.log p.ok { color: #2c7a4b; }
+.log p.err { color: #c0392b; }
+</style>
 </head>
 <body>
 <div class="wrap">
@@ -20,16 +69,25 @@
     <header class="top">
       <div>
         <h1>📤 上傳 PDF</h1>
-        <div class="subtitle">上傳後即可在任何電腦透過首頁開啟</div>
+        <div class="subtitle">支援大型檔案，系統自動壓縮，無需手動處理</div>
       </div>
       <a class="nav-link" href="index.html">← 回到 PDF 庫</a>
     </header>
 
     <div class="card" style="display:block;">
-      <input type="file" id="fileInput" accept="application/pdf" multiple>
+      <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+        <div class="upload-icon">📄</div>
+        <div>點擊選擇或拖曳 PDF 到這裡</div>
+        <div class="upload-hint">可一次選多份 · 大型檔案自動壓縮，不需手動處理</div>
+        <input type="file" id="fileInput" accept="application/pdf" multiple>
+      </div>
+
+      <div class="file-list" id="fileList"></div>
+
       <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
-      <button onclick="uploadFile()" id="uploadBtn">上傳</button>
+      <button onclick="startUpload()" id="uploadBtn" style="width:100%">上傳</button>
       <div id="uploadStatus" class="status"></div>
+      <div class="log" id="logBox"></div>
     </div>
 
     <h2 style="font-size:1.1rem; margin-top:36px;">已上傳的 PDF</h2>
@@ -40,57 +98,212 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
-<script>
+<script type="module">
+import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs';
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
+
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-function checkPassword() {
-  const val = document.getElementById('pwInput').value;
-  if (val === UPLOAD_PASSWORD) {
+// ── 密碼 ──────────────────────────────────────────────────────
+window.checkPassword = function() {
+  if (document.getElementById('pwInput').value === UPLOAD_PASSWORD) {
     sessionStorage.setItem('pdf_upload_auth', 'ok');
     document.getElementById('gate').style.display = 'none';
     document.getElementById('main').style.display = 'block';
     loadList();
   } else {
-    document.getElementById('gateStatus').textContent = '密碼錯誤,請再試一次';
+    document.getElementById('gateStatus').textContent = '密碼錯誤，請再試一次';
   }
-}
-
+};
+document.getElementById('pwInput').addEventListener('keydown', e => { if (e.key === 'Enter') window.checkPassword(); });
 if (sessionStorage.getItem('pdf_upload_auth') === 'ok') {
   document.getElementById('gate').style.display = 'none';
   document.getElementById('main').style.display = 'block';
+  loadList();
 }
 
-document.getElementById('pwInput')?.addEventListener('keydown', e => {
-  if (e.key === 'Enter') checkPassword();
+// ── 檔案選擇 ──────────────────────────────────────────────────
+let selectedFiles = [];
+
+document.getElementById('fileInput').addEventListener('change', e => {
+  addFiles(Array.from(e.target.files));
+  e.target.value = '';
 });
 
-function formatDate(iso) {
-  const d = new Date(iso);
-  return d.toLocaleString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+const dropZone = document.getElementById('dropZone');
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  addFiles(Array.from(e.dataTransfer.files).filter(f => f.type === 'application/pdf'));
+});
+
+function addFiles(files) {
+  files.forEach(f => {
+    if (!selectedFiles.find(x => x.name === f.name && x.size === f.size)) selectedFiles.push(f);
+  });
+  renderFileList();
 }
 
-function formatSize(bytes) {
-  if (!bytes) return '';
-  const mb = bytes / (1024 * 1024);
-  return mb >= 1 ? mb.toFixed(1) + ' MB' : (bytes / 1024).toFixed(0) + ' KB';
+window.removeFile = function(i) { selectedFiles.splice(i, 1); renderFileList(); };
+
+function formatSize(b) {
+  const mb = b / 1024 / 1024;
+  return mb >= 1 ? mb.toFixed(1) + ' MB' : (b / 1024).toFixed(0) + ' KB';
+}
+
+function renderFileList() {
+  const el = document.getElementById('fileList');
+  if (!selectedFiles.length) { el.innerHTML = ''; return; }
+  el.innerHTML = selectedFiles.map((f, i) => `
+    <div class="file-item">
+      <span>📄</span>
+      <span class="fname">${f.name}</span>
+      <span class="fsize">${formatSize(f.size)}</span>
+      <span class="fremove" onclick="removeFile(${i})">✕</span>
+    </div>
+  `).join('');
+}
+
+// ── 壓縮核心 ──────────────────────────────────────────────────
+const SIZE_THRESHOLD = 20 * 1024 * 1024; // 20 MB 以上才壓縮
+const RENDER_SCALE   = 0.34;             // 縮小至約 1/3，課堂投影足夠
+const JPEG_QUALITY   = 0.72;
+
+async function compressPdf(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const totalPages = pdfDoc.numPages;
+
+  const { jsPDF } = await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.es.min.js');
+  let pdf = null;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+
+  for (let i = 1; i <= totalPages; i++) {
+    const page = await pdfDoc.getPage(i);
+    const vp = page.getViewport({ scale: RENDER_SCALE });
+    canvas.width  = Math.round(vp.width);
+    canvas.height = Math.round(vp.height);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+    const imgData = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+    const wPt = vp.width  * 0.75;
+    const hPt = vp.height * 0.75;
+
+    if (!pdf) {
+      pdf = new jsPDF({ orientation: wPt > hPt ? 'l' : 'p', unit: 'pt', format: [wPt, hPt] });
+    } else {
+      pdf.addPage([wPt, hPt], wPt > hPt ? 'l' : 'p');
+    }
+    pdf.addImage(imgData, 'JPEG', 0, 0, wPt, hPt, undefined, 'FAST');
+    logMsg(`  壓縮第 ${i}/${totalPages} 頁`);
+  }
+
+  return new File([pdf.output('blob')], file.name, { type: 'application/pdf' });
+}
+
+// ── 上傳 ──────────────────────────────────────────────────────
+function setProgress(pct) {
+  document.getElementById('progressBar').classList.add('active');
+  document.getElementById('progressFill').style.width = pct + '%';
+}
+function setStatus(msg, cls = '') {
+  const el = document.getElementById('uploadStatus');
+  el.className = 'status ' + cls;
+  el.textContent = msg;
+}
+function logMsg(msg, cls = '') {
+  const box = document.getElementById('logBox');
+  box.classList.add('show');
+  const p = document.createElement('p');
+  if (cls) p.className = cls;
+  p.textContent = msg;
+  box.appendChild(p);
+  box.scrollTop = box.scrollHeight;
+}
+
+window.startUpload = async function() {
+  if (!selectedFiles.length) { setStatus('請先選擇至少一個 PDF 檔案', 'error'); return; }
+  const btn = document.getElementById('uploadBtn');
+  btn.disabled = true;
+  document.getElementById('logBox').innerHTML = '';
+  document.getElementById('logBox').classList.remove('show');
+
+  let successCount = 0;
+  const failed = [];
+
+  for (let i = 0; i < selectedFiles.length; i++) {
+    const origFile = selectedFiles[i];
+    setProgress(Math.round((i / selectedFiles.length) * 100));
+    setStatus(`處理中 (${i + 1}/${selectedFiles.length})：${origFile.name}`);
+
+    try {
+      let uploadFile = origFile;
+      if (origFile.size > SIZE_THRESHOLD) {
+        logMsg(`📦 ${origFile.name}（${formatSize(origFile.size)}）— 自動壓縮中…`);
+        uploadFile = await compressPdf(origFile);
+        logMsg(`  ✅ 壓縮完成 → ${formatSize(uploadFile.size)}`, 'ok');
+      } else {
+        logMsg(`📄 ${origFile.name}（${formatSize(origFile.size)}）— 直接上傳`);
+      }
+
+      const safeName = origFile.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      const storagePath = `${Date.now()}_${i}_${safeName}`;
+
+      const { error: uploadError } = await sb.storage
+        .from(BUCKET_NAME).upload(storagePath, uploadFile, { contentType: 'application/pdf' });
+      if (uploadError) throw uploadError;
+
+      const { data: urlData } = sb.storage.from(BUCKET_NAME).getPublicUrl(storagePath);
+      const { error: insertError } = await sb.from('pdfs').insert({
+        name: origFile.name,
+        storage_path: storagePath,
+        url: urlData.publicUrl,
+        size: uploadFile.size
+      });
+      if (insertError) throw insertError;
+
+      logMsg(`  ✅ 上傳完成：${origFile.name}`, 'ok');
+      successCount++;
+    } catch (err) {
+      logMsg(`  ❌ 失敗：${origFile.name} — ${err.message}`, 'err');
+      failed.push(origFile.name);
+    }
+
+    setProgress(Math.round(((i + 1) / selectedFiles.length) * 100));
+  }
+
+  if (failed.length === 0) {
+    setStatus(`✅ 全部完成！共上傳 ${successCount} 份 PDF`, 'success');
+  } else {
+    setStatus(`完成 ${successCount} 份，失敗 ${failed.length} 份`, 'error');
+  }
+
+  selectedFiles = [];
+  renderFileList();
+  loadList();
+  btn.disabled = false;
+  setTimeout(() => {
+    document.getElementById('progressBar').classList.remove('active');
+    document.getElementById('progressFill').style.width = '0%';
+  }, 1000);
+};
+
+// ── 清單 ──────────────────────────────────────────────────────
+function formatDate(iso) {
+  return new Date(iso).toLocaleString('zh-TW', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+  });
 }
 
 async function loadList() {
   const listEl = document.getElementById('list');
-  const { data, error } = await sb
-    .from('pdfs')
-    .select('*')
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    listEl.innerHTML = `<div class="empty">讀取失敗:${error.message}</div>`;
-    return;
-  }
-  if (!data || data.length === 0) {
-    listEl.innerHTML = `<div class="empty">尚無已上傳的 PDF</div>`;
-    return;
-  }
-
+  const { data, error } = await sb.from('pdfs').select('*').order('created_at', { ascending: false });
+  if (error) { listEl.innerHTML = `<div class="empty">讀取失敗：${error.message}</div>`; return; }
+  if (!data || !data.length) { listEl.innerHTML = `<div class="empty">尚無已上傳的 PDF</div>`; return; }
   listEl.innerHTML = data.map(item => `
     <div class="card">
       <div>
@@ -99,101 +312,18 @@ async function loadList() {
       </div>
       <div class="row-actions">
         <a class="btn secondary" href="${item.url}" target="_blank" rel="noopener">開啟</a>
-        <button class="danger" onclick="deleteFile('${item.id}', '${item.storage_path}')">刪除</button>
+        <button class="danger" onclick="deleteFile('${item.id}','${item.storage_path}')">刪除</button>
       </div>
     </div>
   `).join('');
 }
 
-async function uploadFile() {
-  const fileInput = document.getElementById('fileInput');
-  const statusEl = document.getElementById('uploadStatus');
-  const btn = document.getElementById('uploadBtn');
-  const bar = document.getElementById('progressBar');
-  const fill = document.getElementById('progressFill');
-
-  const files = Array.from(fileInput.files);
-  if (files.length === 0) {
-    statusEl.className = 'status error';
-    statusEl.textContent = '請先選擇至少一個 PDF 檔案';
-    return;
-  }
-  const nonPdf = files.filter(f => f.type !== 'application/pdf');
-  if (nonPdf.length > 0) {
-    statusEl.className = 'status error';
-    statusEl.textContent = '只能上傳 PDF 檔案:' + nonPdf.map(f => f.name).join('、');
-    return;
-  }
-
-  btn.disabled = true;
-  bar.classList.add('active');
-
-  let successCount = 0;
-  const failed = [];
-
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    statusEl.className = 'status';
-    statusEl.textContent = `上傳中 (${i + 1}/${files.length}):${file.name}`;
-    fill.style.width = `${Math.round(((i + 0.5) / files.length) * 100)}%`;
-
-    const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
-    const storagePath = `${Date.now()}_${i}_${safeName}`;
-
-    try {
-      const { error: uploadError } = await sb.storage
-        .from(BUCKET_NAME)
-        .upload(storagePath, file, { contentType: 'application/pdf' });
-
-      if (uploadError) throw uploadError;
-
-      const { data: urlData } = sb.storage.from(BUCKET_NAME).getPublicUrl(storagePath);
-
-      const { error: insertError } = await sb.from('pdfs').insert({
-        name: file.name,
-        storage_path: storagePath,
-        url: urlData.publicUrl,
-        size: file.size
-      });
-
-      if (insertError) throw insertError;
-      successCount++;
-    } catch (err) {
-      failed.push(`${file.name}(${err.message})`);
-    }
-
-    fill.style.width = `${Math.round(((i + 1) / files.length) * 100)}%`;
-  }
-
-  if (failed.length === 0) {
-    statusEl.className = 'status success';
-    statusEl.textContent = `✅ 成功上傳 ${successCount} 份 PDF!`;
-  } else {
-    statusEl.className = 'status error';
-    statusEl.textContent = `完成 ${successCount} 份,失敗:${failed.join('、')}`;
-  }
-
-  fileInput.value = '';
+window.deleteFile = async function(id, storagePath) {
+  if (!confirm('確定要刪除這個 PDF 嗎？此動作無法復原。')) return;
+  await sb.storage.from(BUCKET_NAME).remove([storagePath]);
+  await sb.from('pdfs').delete().eq('id', id);
   loadList();
-  btn.disabled = false;
-  setTimeout(() => { bar.classList.remove('active'); fill.style.width = '0%'; }, 800);
-}
-
-async function deleteFile(id, storagePath) {
-  if (!confirm('確定要刪除這個 PDF 嗎?此動作無法復原。')) return;
-
-  const { error: storageError } = await sb.storage.from(BUCKET_NAME).remove([storagePath]);
-  if (storageError) {
-    alert('刪除檔案失敗:' + storageError.message);
-    return;
-  }
-  const { error: dbError } = await sb.from('pdfs').delete().eq('id', id);
-  if (dbError) {
-    alert('刪除紀錄失敗:' + dbError.message);
-    return;
-  }
-  loadList();
-}
+};
 </script>
 </body>
 </html>
